@@ -1519,7 +1519,7 @@ agx_build_meta_shader_internal(struct agx_context *ctx,
                                unsigned cf_base, bool internal_kernel);
 
 static bool
-agx_apple9_bounded_render_signature(const nir_shader *nir)
+agx_apple9_bounded_render_signature(const nir_shader *nir, const char **reason)
 {
    uint64_t user = 0;
    for (unsigned i = 0; i < 64; ++i) {
@@ -1531,10 +1531,22 @@ agx_apple9_bounded_render_signature(const nir_shader *nir)
       /* Compatibility attributes and generic attributes both use compacted
        * driver locations. Their semantic numbers are not hardware bindings. */
       uint64_t supported_inputs = BITFIELD64_MASK(VERT_ATTRIB_MAX);
-      return !(nir->info.inputs_read & ~supported_inputs) &&
-             (nir->info.outputs_written & position) &&
-             !(nir->info.outputs_written &
-               ~(position | user | BITFIELD64_BIT(VARYING_SLOT_PSIZ) | VARYING_BIT_LAYER));
+      uint64_t unsupported_outputs = nir->info.outputs_written &
+         ~(position | user | BITFIELD64_BIT(VARYING_SLOT_PSIZ) | VARYING_BIT_LAYER);
+      if (nir->info.inputs_read & ~supported_inputs) {
+         *reason = "unsupported vertex input location";
+         return false;
+      }
+      if (!(nir->info.outputs_written & position)) {
+         *reason = "missing gl_Position output";
+         return false;
+      }
+      if (unsupported_outputs) {
+         *reason = gl_varying_slot_name_for_stage(
+            (gl_varying_slot)(ffsll(unsupported_outputs) - 1), MESA_SHADER_VERTEX);
+         return false;
+      }
+      return true;
    }
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       uint64_t colors = nir->info.outputs_written;
@@ -1785,14 +1797,16 @@ agx_compile_variant(struct agx_device *dev, struct pipe_context *pctx,
                        so->early_serialized_nir.size);
       nir_shader *bootstrap =
          nir_deserialize(NULL, &agx_nir_options, &bootstrap_reader);
-      bool supported = agx_apple9_bounded_render_signature(bootstrap);
+      const char *signature_reason = "unsupported fragment input/output";
+      bool supported =
+         agx_apple9_bounded_render_signature(bootstrap, &signature_reason);
       if (so->type == MESA_SHADER_VERTEX && key_->vs.apple9_inputs.capture_xfb)
          supported = true;
       if (!supported) {
          fprintf(stderr,
                  "Apple9 bootstrap render compiler rejected unsupported "
-                 "%s shader IO/signature\n",
-                 _mesa_shader_stage_to_abbrev(so->type));
+                 "%s shader IO/signature: %s\n",
+                 _mesa_shader_stage_to_abbrev(so->type), signature_reason);
          nir_print_shader(bootstrap, stderr);
          ralloc_free(bootstrap);
          return NULL;

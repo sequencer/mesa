@@ -123,6 +123,7 @@ agx_apple9_varying_supported(unsigned location)
    return (location >= VARYING_SLOT_COL0 && location <= VARYING_SLOT_TEX7) ||
           location == VARYING_SLOT_BFC0 || location == VARYING_SLOT_BFC1 ||
           location == VARYING_SLOT_PRIMITIVE_ID ||
+          location == VARYING_SLOT_CLIP_VERTEX ||
           location == VARYING_SLOT_CLIP_DIST0 || location == VARYING_SLOT_CLIP_DIST1 ||
           (location >= VARYING_SLOT_VAR0 && location <= VARYING_SLOT_VAR31);
 }

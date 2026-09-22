@@ -9903,6 +9903,100 @@ TEST_F(Apple9Completion, TexturesShareTagsWithMemoryAndRetireOnExhaustion)
    EXPECT_EQ(active, 0u);
 }
 
+TEST(Apple9Compiler, ClipVertexUsesOrdinaryVaryingExport)
+{
+   for (bool clipping : {false, true}) {
+      nir_builder b = nir_builder_init_simple_shader(
+         MESA_SHADER_VERTEX, &agx_nir_options, "legacy_clip_vertex");
+      nir_def *zero = nir_imm_int(&b, 0);
+      nir_def *position = nir_imm_vec4(&b, 0, 0, 0, 1);
+      nir_store_output(&b, position, zero, .write_mask = 15,
+         .src_type = nir_type_float32,
+         .io_semantics = {.location = VARYING_SLOT_POS, .num_slots = 1});
+      nir_store_output(&b, nir_fneg(&b, position), zero, .base = 1,
+         .write_mask = 15, .src_type = nir_type_float32,
+         .io_semantics = {.location = VARYING_SLOT_CLIP_VERTEX, .num_slots = 1});
+      if (clipping) {
+         nir_store_output(&b, nir_imm_float(&b, 0.5), zero, .base = 2,
+            .write_mask = 1, .src_type = nir_type_float32,
+            .io_semantics = {.location = VARYING_SLOT_CLIP_DIST0, .num_slots = 1});
+         b.shader->info.clip_distance_array_size = 1;
+      }
+      b.shader->info.io_lowered = true;
+      nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+
+      agx_apple9_vertex_layout layout = {};
+      layout.clip_distance_enable = clipping ? 1 : 0;
+      agx_shader_part out = {};
+      const char *reason = nullptr;
+      ASSERT_TRUE(agx_compile_apple9_vertex_inputs(b.shader, &layout, &out, &reason))
+         << reason;
+      EXPECT_EQ(out.info.apple9_varyings.mask[VARYING_SLOT_CLIP_VERTEX], 15u);
+      EXPECT_EQ(out.info.apple9_clip_distance_count, clipping ? 1u : 0u);
+      free(out.binary);
+      ralloc_free(b.shader);
+   }
+}
+
+TEST(Apple9Compiler, ClipVertexSharesVaryingPublicationCapacity)
+{
+   for (unsigned count : {92u, 93u, 96u}) {
+      nir_builder b = nir_builder_init_simple_shader(
+         MESA_SHADER_VERTEX, &agx_nir_options, "clip_vertex_capacity");
+      nir_def *zero = nir_imm_int(&b, 0);
+      nir_store_output(&b, nir_imm_vec4(&b, 0, 0, 0, 1), zero,
+         .write_mask = 15, .src_type = nir_type_float32,
+         .io_semantics = {.location = VARYING_SLOT_POS, .num_slots = 1});
+      nir_store_output(&b, nir_imm_vec4(&b, 2, 3, 4, 5), zero,
+         .write_mask = 15, .src_type = nir_type_float32,
+         .io_semantics = {.location = VARYING_SLOT_CLIP_VERTEX, .num_slots = 1});
+      for (unsigned i = 0; i < count; ++i) {
+         nir_store_output(&b, nir_imm_float(&b, i * .0625), zero,
+            .write_mask = 1, .component = i % 4, .src_type = nir_type_float32,
+            .io_semantics = {.location = (uint8_t)(VARYING_SLOT_VAR0 + i / 4),
+                             .num_slots = 1});
+      }
+      b.shader->info.io_lowered = true;
+      agx_shader_part out = {};
+      const char *reason = nullptr;
+      bool ok = agx_compile_apple9_vertex(b.shader, &out, &reason);
+      if (count + 4 <= AGX_APPLE9_MAX_VARYING_COMPONENTS) {
+         ASSERT_TRUE(ok) << reason;
+         EXPECT_EQ(out.info.apple9_varyings.count, count + 4);
+         EXPECT_EQ(out.info.apple9_varyings.mask[VARYING_SLOT_CLIP_VERTEX], 15u);
+         free(out.binary);
+      } else {
+         EXPECT_FALSE(ok);
+         EXPECT_EQ(out.binary, nullptr);
+         ASSERT_NE(reason, nullptr);
+         EXPECT_NE(strstr(reason, "96 user"), nullptr);
+      }
+      ralloc_free(b.shader);
+   }
+}
+
+TEST(Apple9Compiler, ClipVertexVariablePreservesShaderReads)
+{
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_VERTEX, &agx_nir_options, "legacy_clip_vertex_variable");
+   nir_variable *clip = nir_variable_create(
+      b.shader, nir_var_shader_out, glsl_vec4_type(), "gl_ClipVertex");
+   clip->data.location = VARYING_SLOT_CLIP_VERTEX;
+   nir_variable *position = nir_variable_create(
+      b.shader, nir_var_shader_out, glsl_vec4_type(), "gl_Position");
+   position->data.location = VARYING_SLOT_POS;
+   nir_store_var(&b, clip, nir_imm_vec4(&b, 2, 3, 4, 5), 15);
+   nir_store_var(&b, position, nir_load_var(&b, clip), 15);
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   agx_shader_part out = {};
+   const char *reason = nullptr;
+   ASSERT_TRUE(agx_compile_apple9_vertex(b.shader, &out, &reason)) << reason;
+   EXPECT_EQ(out.info.apple9_varyings.count, 4u);
+   EXPECT_EQ(out.info.apple9_varyings.mask[VARYING_SLOT_CLIP_VERTEX], 15u);
+   free(out.binary);
+   ralloc_free(b.shader);
+}
+
 TEST(Apple9Compiler, TransformFeedbackUsesOrdinaryStoresAndPolyInputAssembly)
 {
    for (auto mode : {MESA_PRIM_POINTS, MESA_PRIM_LINES, MESA_PRIM_LINE_STRIP,
@@ -9971,6 +10065,44 @@ TEST(Apple9Compiler, TransformFeedbackUsesOrdinaryStoresAndPolyInputAssembly)
          ralloc_free(b.shader);
       }
    }
+}
+
+TEST(Apple9Compiler, TransformFeedbackPreservesClipVertex)
+{
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_VERTEX, &agx_nir_options, "capture_clip_vertex");
+   nir_def *zero = nir_imm_int(&b, 0);
+   nir_store_output(&b, nir_imm_vec4(&b, 0, 0, 0, 1), zero, .write_mask = 15,
+      .src_type = nir_type_float32,
+      .io_semantics = {.location = VARYING_SLOT_POS, .num_slots = 1});
+   nir_store_output(&b, nir_imm_vec4(&b, 2, 3, 4, 5), zero, .base = 1,
+      .write_mask = 15, .src_type = nir_type_float32,
+      .io_semantics = {.location = VARYING_SLOT_CLIP_VERTEX, .num_slots = 1});
+   auto *xfb = (nir_xfb_info *)rzalloc_size(b.shader, nir_xfb_info_size(1));
+   xfb->buffers_written = 1;
+   xfb->streams_written = 1;
+   xfb->output_count = 1;
+   xfb->buffers[0].stride = 16;
+   xfb->outputs[0] = {.buffer = 0, .offset = 0,
+                      .location = VARYING_SLOT_CLIP_VERTEX, .component_mask = 15};
+   b.shader->xfb_info = xfb;
+   b.shader->info.io_lowered = true;
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   agx_apple9_vertex_layout layout = {};
+   layout.capture_xfb = true;
+   layout.xfb_mode = MESA_PRIM_POINTS;
+   agx_shader_part out = {};
+   const char *reason = nullptr;
+   ASSERT_TRUE(agx_compile_apple9_vertex_inputs(b.shader, &layout, &out, &reason))
+      << reason;
+   bool captured = false;
+   for (unsigned i = 0; i < out.info.apple9_resource_count; ++i) {
+      if (out.info.apple9_resource_binding[i] == AGX_APPLE9_XFB_BUFFER_BASE)
+         captured |= out.info.apple9_resource_write_mask & (1u << i);
+   }
+   EXPECT_TRUE(captured);
+   free(out.binary);
+   ralloc_free(b.shader);
 }
 
 TEST(Apple9Packer, UnaryHighRegisterBitsPreserveLifetimesAndDependencies)
