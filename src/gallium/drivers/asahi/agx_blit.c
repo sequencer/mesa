@@ -585,7 +585,12 @@ agx_blit(struct pipe_context *pipe, const struct pipe_blit_info *info)
          return;
       }
    }
-   if (apple9 && util_try_blit_via_copy_region(pipe, info, false))
+   if (apple9 &&
+       !ail_is_level_logically_compressed(
+          &agx_resource(info->src.resource)->layout, info->src.level) &&
+       !ail_is_level_logically_compressed(
+          &agx_resource(info->dst.resource)->layout, info->dst.level) &&
+       util_try_blit_via_copy_region(pipe, info, false))
       return;
 
    if (!apple9 && asahi_compute_blit_supported(info)) {

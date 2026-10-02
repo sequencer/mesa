@@ -453,6 +453,16 @@ agx_compression_allowed(const struct agx_resource *pres)
       return false;
    }
 
+   /* The Apple9 render path has no compressed layouts yet. On G16G a
+    * compressed resource makes the batch fail with "failed to prepare Apple9
+    * color target" and texture binding reject the view ("unsupported view ...
+    * compressed=1"), which leaves niri without output.
+    */
+   if (agx_apple9_direct_render_enabled(agx_device(pres->base.screen))) {
+      rsrc_debug(pres, "No compression: Apple9\n");
+      return false;
+   }
+
    /* Limited to renderable */
    if (pres->base.bind &
        ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET |
@@ -2457,8 +2467,7 @@ agx_init_screen_caps(struct pipe_screen *pscreen)
       caps->robust_buffer_access_behavior = false;
       /* EGL robustness context creation requires a contract we cannot provide. */
       caps->device_reset_status_query = false;
-      /* The Apple9 texture compiler does not lower external sampler dimensions. */
-      caps->texture_external = false;
+      caps->texture_external = true;
       /* Cull distances still need primitive rejection lowering. */
       caps->cull_distance = false;
       /* One RGBA8 tile-output slot per active color attachment. */

@@ -5282,12 +5282,16 @@ apple9_lower_fragment_uniform(nir_builder *b, nir_intrinsic_instr *intr, void *d
  * pass normalizes their coordinates; explicit gradients need the same scale.
  * Integer fetches use level zero without any coordinate normalization. */
 static bool
-apple9_lower_rectangle(nir_builder *b, nir_instr *instr, UNUSED void *data)
+apple9_lower_texture_dimensions(nir_builder *b, nir_instr *instr, UNUSED void *data)
 {
    if (instr->type != nir_instr_type_tex)
       return false;
 
    nir_tex_instr *tex = nir_instr_as_tex(instr);
+   if (tex->sampler_dim == GLSL_SAMPLER_DIM_EXTERNAL) {
+      tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+      return true;
+   }
    if (tex->sampler_dim != GLSL_SAMPLER_DIM_RECT)
       return false;
 
@@ -5368,7 +5372,7 @@ agx_nir_lower_apple9_sampler_state(
    } while (optimized);
    nir_lower_samplers(nir);
    nir_opt_constant_folding(nir);
-   nir_shader_instructions_pass(nir, apple9_lower_rectangle,
+   nir_shader_instructions_pass(nir, apple9_lower_texture_dimensions,
                                 nir_metadata_control_flow, NULL);
    const nir_lower_tex_options options = {
       .lower_txp = ~0u, .lower_1d = true,
@@ -6655,7 +6659,7 @@ apple9_lower_textures(nir_shader *nir)
    };
    nir_shader_instructions_pass(nir, apple9_lower_array_shadow_gradients,
                                 nir_metadata_control_flow, NULL);
-   nir_shader_instructions_pass(nir, apple9_lower_rectangle,
+   nir_shader_instructions_pass(nir, apple9_lower_texture_dimensions,
                                 nir_metadata_control_flow, NULL);
    nir_lower_tex(nir, &tex_options);
    nir_shader_instructions_pass(nir, apple9_lower_buffer_texture,
