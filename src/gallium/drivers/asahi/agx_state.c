@@ -7050,9 +7050,7 @@ agx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       batch->apple9_previous_draw = *record;
       ++batch->apple9_draw_count;
       pipeline.ppp = record->ppp;
-      pipeline.vertex_launch = record->launch[0] / 0x40;
-      /* Native vertex launch configuration. It is not a header address. */
-      pipeline.pipeline_word = 0x01000000;
+      pipeline.vertex_state_load = dev->shader_base + record->launch[0];
       /* Background and EOT dispatch use these fragment entries directly.
        * A rasterized reload triangle would mark every tile as non-empty,
        * forcing attachment traffic even where the application draws nothing. */

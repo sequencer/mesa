@@ -85,10 +85,10 @@ struct agx_apple9_render_pipeline {
    /* Batch-owned PPP record, relative to the render-context aperture. */
    uint32_t ppp;
 
-   /* Apple9 VDM linkage words produced by the bounded pipeline linker. */
-   uint32_t pipeline_word;
-   uint32_t vertex_launch;
-   uint32_t vertex_state_class;
+   /* GPU address of the vertex state-load program for this draw. */
+   uint64_t vertex_state_load;
+   /* Scalar vertex outputs, position included. */
+   uint16_t vertex_outputs;
 
    uint64_t index_buffer;
    uint32_t index_extent;

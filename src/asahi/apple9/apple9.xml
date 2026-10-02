@@ -1,0 +1,84 @@
+<?xml version="1.0" ?>
+<!--
+  Apple9 (G16G) record layouts, from the 26A428 userspace driver.
+
+  Evidence is cited as U:<address range> in AGXMetalG16G_B0; see README.md
+  for provenance. Structs that are bit-identical to Apple8 are not repeated
+  here: the Apple9 encoders use the cmdbuf.xml definitions directly.
+-->
+<genxml>
+  <!--
+    VDM stream. Native encoder: AGX::VDMEncoderGen5<AGX::HAL200::ESLEncoder,
+    AGX::HAL200::DeviceConstants, AGX::HAL200::VsStateConfig>.
+
+    Shared with Apple8: "VDM State" (first word), "VDM State Restart Index",
+    "Index List" and its Buffer lo / Count / Instances / Start words,
+    "PPP State", "VDM Stream Link".
+  -->
+
+  <!--
+    The six words following a "VDM State" word of 0x4000002e (vertex shader
+    word 0/1, vertex outputs and vertex unknown present). Built per vertex
+    program variant by VertexProgramVariant::finalize, U:2148da144..2148da32c,
+    and completed per draw in encodeAndEmitRenderState, U:2149c1c00..2149c1c64.
+  -->
+  <struct name="Apple9 VDM Vertex State" size="24">
+    <!-- Two counts in 32-bit words derived from the compiler reply, read
+         from the variant's state-load encoder at +0x12c and +0x128
+         (U:2148d9f70..2148d9f8c). Their native names are unknown. -->
+    <field name="State load count A" size="12" start="8" type="uint"/>
+    <!-- From variant+0xf2c: bit 4 when bits 2 and 3 are clear, else 1
+         (U:2148da154..2148da170). -->
+    <field name="Unknown 31" size="1" start="31" type="bool"/>
+
+    <field name="State load count B" size="18" start="35" type="uint"/>
+    <!-- GPU address of the vertex state-load program, bits 38..47 and
+         6..37 (U:2149c1c2c..2149c1c34, U:2149c1c5c). -->
+    <field name="State load hi" size="10" start="54" type="hex"/>
+    <field name="State load lo" size="32" start="64" type="hex"/>
+
+    <!-- variant+0xf08; variant+0xf08 + variant+0xf10 + (variant+0xf00 != 0);
+         variant+0xf10 (U:2148da188..2148da1a8). The first two are the Apple8
+         "VDM State Vertex Outputs" counts. -->
+    <field name="Output count 1" size="8" start="96" type="uint"/>
+    <field name="Output count 2" size="8" start="104" type="uint"/>
+    <field name="Output count 3" size="8" start="112" type="uint"/>
+
+    <!-- Apple8 "VDM State Vertex Unknown" (U:2148da178..2148da184). Bits 4
+         and 5 are set when RenderPipeline+0x2f0 is zero. -->
+    <field name="Flat shading control" size="2" start="128" type="VDM Vertex"/>
+    <field name="Unknown 2" size="2" start="130" type="hex"/>
+    <field name="Unknown 4" size="1" start="132" type="bool"/>
+    <field name="Unknown 5" size="1" start="133" type="bool"/>
+    <field name="Generate primitive ID" size="1" start="134" type="bool"/>
+
+    <!-- ([ctx+0x8410] - 1) & 7, zero by default (U:2149c1c38..2149c1c4c). -->
+    <field name="Unknown count" size="3" start="160" type="uint" modifier="minus(1)" default="1"/>
+  </struct>
+
+  <!-- Indexed draws: index range from the 4-byte aligned start of the index
+       data, in 32-bit words minus one (U:2149ee3e8..2149ee3f4, U:2149ee430).
+       Apple8 stores the word count without the bias. -->
+  <struct name="Apple9 Index List: Buffer size" size="4">
+    <field name="Words" size="32" start="0" type="uint" modifier="minus(1)"/>
+  </struct>
+
+  <!-- Indexed draws end with bits 40..47 of the index address
+       (U:2149ee434, U:2149ee44c). "Index List" carries bits 32..39. -->
+  <struct name="Apple9 Index List: Buffer hi" size="4">
+    <field name="Address bits 40 to 47" size="8" start="0" type="hex"/>
+  </struct>
+
+  <!-- Indirect draws: address bits 32..47, then the low word with bits 0..1
+       clear (U:2149ee738..2149ee760). Apple8 has 8 high bits. -->
+  <struct name="Apple9 Index List: Indirect buffer" size="8">
+    <field name="Address hi" size="16" start="0" type="hex"/>
+    <field name="Address lo" size="32" start="32" type="hex"/>
+  </struct>
+
+  <!-- A single word; written once at the end of a stream by
+       emitEndCommandStream (U:2149c9f38..2149c9f48). -->
+  <struct name="Apple9 VDM Stream Terminate" size="4">
+    <field name="Block Type" size="3" start="29" type="VDM Block Type" exact="Stream Terminate"/>
+  </struct>
+</genxml>
