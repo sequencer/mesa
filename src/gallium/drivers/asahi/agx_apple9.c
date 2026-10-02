@@ -8,6 +8,7 @@
 #include "asahi/lib/pool.h"
 #include "pipe/p_defines.h"
 #include "agx_apple9_launch.h"
+#include "agx9_ppp.h"
 #include "agx9_vdm.h"
 
 #include <assert.h>
@@ -717,52 +718,6 @@ apple9_build_cf_bindings(uint8_t *table, unsigned components,
    return binding;
 }
 
-static void
-apple9_build_direct_bind_group(uint8_t *page, unsigned varying_components)
-{
-   static const struct {
-      uint16_t offset;
-      uint32_t value;
-   } common[] = {
-      {0x00, 0x00800000}, {0x04, 0x00010100}, {0x08, 0x0000c9c0},
-      {0x10, 0x01000000}, {0x14, 0x00066420}, {0x1c, 0x0c0a0000},
-      {0x20, 0x00010000}, {0x2c, 0x00000006}, {0x30, 0x010000b4},
-      {0x34, 0x00040200}, {0x38, 0x07200f00}, {0x3c, 0x0e000000},
-      {0x40, 0x07200f00}, {0x44, 0x0e000000}, {0x4c, 0x02000048},
-      {0x50, 0x00000200}, {0x54, 0x07e00000}, {0x58, 0x07e00000},
-      {0x5c, 0x0000000f}, {0x60, 0x00410000}, {0x68, 0x00000080},
-      {0x6c, 0x00200000}, {0x70, 0x00000480},
-   };
-
-   memset(page, 0, 0x80);
-   for (unsigned i = 0; i < ARRAY_SIZE(common); ++i)
-      apple9_put_u32(page + common[i].offset, common[i].value);
-
-   /* T8140 direct-render deltas reused by Apple9. */
-   apple9_put_u32(page + 0x04, 0);
-   apple9_put_u32(page + 0x08, 0);
-   apple9_put_u32(page + 0x14, 0x00004e19);
-   apple9_put_u32(page + 0x20, 0);
-   apple9_put_u32(page + 0x2c, 4);
-   apple9_put_u32(page + 0x5c, 0x0001ffff);
-
-   /* Small G16 packing deltas established independently on T8132. */
-   page[0x05] = 0x01;
-   page[0x06] = 0x02;
-   page[0x08] = 0x80;
-   page[0x09] = 0x04;
-   page[0x15] = 0x8c;
-   page[0x22] = 0x01;
-   assert(varying_components <= AGX_APPLE9_MAX_VARYING_COMPONENTS);
-   page[0x2c] = 4 + varying_components;
-   /* G16's fragment-state layout moves the coefficient pointer ahead of
-    * the pipeline words. EXP-M4-59 confirms the public binding descriptors. */
-   apple9_put_u32(page + 0x04,
-                  0x100 | (apple9_cf_binding_count(varying_components) << 16));
-   apple9_put_u32(page + 0x08, APPLE9_CF_BINDINGS);
-   apple9_put_u32(page + 0x18, varying_components / 8);
-}
-
 static bool
 apple9_build_body_entry(uint8_t *out, uint64_t entry, uint64_t body)
 {
@@ -905,104 +860,127 @@ agx_apple9_prepare_draw(struct agx_device *dev, struct agx_pool *usc_pool,
       draw->coefficients = agx_usc_addr(dev, cf.gpu);
    }
    draw->cf_count = cf_count;
-   uint8_t *ppp = draw->ppp_record;
-   memset(ppp, 0, sizeof(draw->ppp_record));
-   apple9_put_u32(ppp, 0x10040000);
    unsigned counts[3] = {0};
    const struct agx_apple9_varying_layout *varyings = &pipeline->vertex.varyings;
    for (unsigned i = 0; i < ARRAY_SIZE(varyings->mask); ++i) {
       assert(varyings->group[i] < ARRAY_SIZE(counts));
       counts[varyings->group[i]] += util_bitcount(varyings->mask[i]);
    }
-   apple9_put_u32(ppp + 4, counts[0] | (counts[1] << 8) | (counts[2] << 16));
-   uint8_t *group = ppp + 0x40;
-   apple9_build_direct_bind_group(group, pipeline->vertex.varying_components);
-   apple9_put_u32(group + 8, draw->coefficients);
-   if (pipeline->fragment.apple9_reads_z)
-      apple9_put_u32(group + 0x20, apple9_get_u32(group + 0x20) | (1u << 21));
-   if (pipeline->fragment.reads_primitive_id)
-      apple9_put_u32(group + 0x68, apple9_get_u32(group + 0x68) | (1u << 12));
-   if (pipeline->vertex.writes_point_size) {
-      apple9_put_u32(group + 0x20, apple9_get_u32(group + 0x20) | (1u << 18));
-   }
-   if (pipeline->vertex.writes_layer_viewport)
-      apple9_put_u32(group + 0x20, apple9_get_u32(group + 0x20) | (3u << 19));
-   apple9_put_u32(group + 0x20, apple9_get_u32(group + 0x20) |
-                  BITFIELD_MASK(pipeline->vertex.clip_distance_count));
-   apple9_put_u32(group + 0x2c, 4 + pipeline->vertex.varying_components +
-                  pipeline->vertex.writes_point_size + pipeline->vertex.clip_distance_count +
-                  pipeline->vertex.writes_layer_viewport);
-   apple9_put_u32(group + 4,
-                  (apple9_get_u32(group + 4) & 0xffff) | (cf_count << 16));
-   /* Match the textured setup's native state, including with two user
-    * varyings. This field's full resource-count formula is unresolved;
-    * the varying-only estimate is insufficient to describe the captures. */
-   apple9_put_u32(group + 0x18, MAX2(apple9_get_u32(group + 0x18), 1));
-   apple9_put_u32(group + 0x14, draw->launch[1] / 0x40);
-   apple9_put_u32(group + 0x5c, tile_bytes ? 0x1ffff : 0);
-   /* Explicit per-sample stores preserve the omitted samples and require
-    * the same ordered tile access as blending. Opaque tag visibility can
-    * lose mixed stencil coverage after an intervening render submission. */
-   if (draw->reads_tile || samples > 1)
-      apple9_put_u32(group + 0x50, apple9_get_u32(group + 0x50) | (1u << 29));
-   /* Authored Metal discard traces: select punch-through and disable
-    * triangle merging so shader coverage controls late tests. */
-   if (draw->uses_discard)
-      apple9_put_u32(group + 0x50, apple9_get_u32(group + 0x50) | 0x44000000u);
+
    /* Keep derivative helper quads within one primitive. Merging fragments
     * with different interpolation planes corrupts implicit texture LOD. */
    bool unfilled = draw->object_type == AGX_OBJECT_TYPE_TRIANGLE &&
                    ((draw->depth_face[0] | draw->depth_face[1]) & (3u << 18));
-   if (draw->disable_tri_merging || unfilled ||
-       draw->object_type != AGX_OBJECT_TYPE_TRIANGLE)
-      apple9_put_u32(group + 0x50, apple9_get_u32(group + 0x50) | (1u << 26));
-   /* Native raster packet: cull front/back bits 0/1, provoking vertex
-    * bits 7/8, clipping/clamping bits 10/11, front winding bit 16. */
-   apple9_put_u32(group + 0x70, (apple9_get_u32(group + 0x70) & ~0x30d83u) |
-                                   ((draw->flatshade_first ? 1u : 3u) << 7) |
-                                   draw->raster_control);
-   apple9_put_u32(group + 0x50, apple9_get_u32(group + 0x50) |
-                                   (draw->visibility_mode << 14) |
-                                   (draw->depth_control & (1u << 21)));
-   apple9_put_u32(group + 0x48, (uint32_t)draw->occlusion_index << 17);
-   apple9_put_u32(group + 0x34, draw->depth_control |
-                                   (unfilled ? 1u << 26 : 0));
-   apple9_put_u32(group + 0x38, draw->depth_face[0]);
-   apple9_put_u32(group + 0x3c, draw->stencil[0]);
-   apple9_put_u32(group + 0x40, draw->depth_face[1]);
-   apple9_put_u32(group + 0x44, draw->stencil[1]);
+
+   struct agx9_ppp_draw state = {
+      .varying_counts = {
+         .smooth = counts[0],
+         .flat = counts[1],
+         .linear = counts[2],
+      },
+      .cf_bindings = dev->shader_base + draw->coefficients,
+      .fragment_state_load = dev->shader_base + draw->launch[1],
+      .fragment_shader = {
+         .cf_binding_count = cf_count,
+         /* Natively a byte of the compiler reply. This estimate matches the
+          * captured textured setup, including with two user varyings. */
+         .unknown = MAX2(pipeline->vertex.varying_components / 8, 1),
+      },
+      .output_select = {
+         .clip_distance_planes =
+            BITFIELD_MASK(pipeline->vertex.clip_distance_count),
+         .varyings = true,
+         .point_size = pipeline->vertex.writes_point_size,
+         .viewport_target = pipeline->vertex.writes_layer_viewport,
+         .render_target = pipeline->vertex.writes_layer_viewport,
+         .frag_coord_z = pipeline->fragment.apple9_reads_z,
+      },
+      .output_size = {
+         .count = 4 + pipeline->vertex.varying_components +
+                  pipeline->vertex.writes_point_size +
+                  pipeline->vertex.clip_distance_count +
+                  pipeline->vertex.writes_layer_viewport,
+      },
+      .fragment_control = draw->depth_control | (unfilled ? 1u << 26 : 0),
+      .fragment_face = {draw->depth_face[0], draw->depth_face[1]},
+      .fragment_stencil = {draw->stencil[0], draw->stencil[1]},
+      .occlusion_query = {.index = draw->occlusion_index},
+      .fragment_control_2 = {
+         .visibility_mode = (enum agx_visibility_mode)draw->visibility_mode,
+         .tag_write_disable = draw->depth_control & (1u << 21),
+         /* Authored Metal discard traces: select punch-through and disable
+          * triangle merging so shader coverage controls late tests. */
+         .disable_tri_merging = draw->uses_discard ||
+                                draw->disable_tri_merging || unfilled ||
+                                draw->object_type != AGX_OBJECT_TYPE_TRIANGLE,
+         /* Explicit per-sample stores preserve the omitted samples and
+          * require the same ordered tile access as blending. Opaque tag
+          * visibility can lose mixed stencil coverage after an intervening
+          * render submission. */
+         .pass_type = (enum agx_pass_type)(
+            ((draw->reads_tile || samples > 1) ? AGX_PASS_TYPE_TRANSLUCENT : 0) |
+            (draw->uses_discard ? AGX_PASS_TYPE_PUNCH_THROUGH : 0)),
+      },
+      .occlusion_query_2 = {.channel_write_mask = tile_bytes ? 0x1ffff : 0},
+      /* Region clip is tile-granular. The scissor array supplies exact
+       * pixel bounds, including empty rectangles and partial edge tiles. */
+      .region_clip = {
+         .enable = true,
+         .min_x = draw->scissor_min[0] / 32,
+         .max_x = DIV_ROUND_UP(MAX2(draw->scissor_max[0], 1), 32),
+         .min_y = draw->scissor_min[1] / 32,
+         .max_y = DIV_ROUND_UP(MAX2(draw->scissor_max[1], 1), 32),
+      },
+      .viewport = {
+         .translate_x = draw->viewport_translate[0],
+         .scale_x = draw->viewport_scale[0],
+         .translate_y = draw->viewport_translate[1],
+         .scale_y = draw->viewport_scale[1],
+         .translate_z = draw->viewport_translate[2],
+         .scale_z = draw->viewport_scale[2],
+      },
+      .cull_2 = {
+         AGX_APPLE9_CULL_2_header,
+         .needs_primitive_id = pipeline->fragment.reads_primitive_id,
+      },
+      /* Cull front/back bits 0/1, provoking vertex bits 7/8,
+       * clipping/clamping bits 10/11, front winding bit 16. */
+      .cull = ((draw->flatshade_first ? 1u : 3u) << 7) | draw->raster_control,
+      .depth_bias_scissor = {
+         .scissor = draw->scissor_index,
+         .depth_bias = draw->depth_bias_index,
+      },
+   };
+
    for (unsigned face = 0; face < 2; ++face) {
-      uint8_t *face2 = group + 0x54 + face * 4;
-      unsigned polygon_mode = (draw->depth_face[face] >> 18) & 3;
-      unsigned object_type = draw->object_type;
+      enum agx_polygon_mode polygon_mode =
+         (enum agx_polygon_mode)((draw->depth_face[face] >> 18) & 3);
+      enum agx_object_type object_type =
+         (enum agx_object_type)draw->object_type;
       if (object_type == AGX_OBJECT_TYPE_TRIANGLE) {
          if (polygon_mode == AGX_POLYGON_MODE_LINE)
             object_type = AGX_OBJECT_TYPE_LINE_FILLED_TRIANGLE;
          else if (polygon_mode == AGX_POLYGON_MODE_POINT)
             object_type = AGX_OBJECT_TYPE_POINT_FILLED_TRIANGLE;
       }
-      apple9_put_u32(face2, (apple9_get_u32(face2) & 0x0f33ffffu) |
-                               (polygon_mode << 18) |
-                               ((draw->writes_depth ? 0u : 3u) << 22) |
-                               (object_type << 28));
+
+      state.fragment_face_2[face] = (struct AGX_APPLE9_FRAGMENT_FACE_2){
+         .polygon_mode = polygon_mode,
+         .disable_depth_write = true,
+         .conservative_depth = draw->writes_depth
+                                  ? AGX_CONSERVATIVE_DEPTH_ANY
+                                  : AGX_CONSERVATIVE_DEPTH_UNCHANGED,
+         .depth_function = AGX_ZS_FUNC_ALWAYS,
+         .object_type = object_type,
+      };
    }
-   apple9_put_u32(ppp + 0xc0, 0xc00);
-   /* Region clip is tile-granular. The scissor array supplies exact pixel
-    * bounds, including empty rectangles and partial edge tiles. */
-   for (unsigned axis = 0; axis < 2; ++axis) {
-      uint32_t lo = draw->scissor_min[axis] / 32;
-      uint32_t hi = DIV_ROUND_UP(MAX2(draw->scissor_max[axis], 1), 32) - 1;
-      apple9_put_u32(ppp + 0xc4 + axis * 4,
-                     (axis ? 0 : 0x80000000u) | (lo << 16) | hi);
-   }
-   for (unsigned axis = 0; axis < 3; ++axis) {
-      apple9_put_f32(ppp + 0xd0 + axis * 8, draw->viewport_translate[axis]);
-      apple9_put_f32(ppp + 0xd4 + axis * 8, draw->viewport_scale[axis]);
-   }
-   /* PPP depth-bias/scissor record: header followed by two 16-bit indices. */
-   apple9_put_u32(ppp + 0xf0, 0x100);
-   apple9_put_u32(ppp + 0xf4, draw->scissor_index |
-                                 ((uint32_t)draw->depth_bias_index << 16));
+
+   uint32_t page[AGX9_PPP_PAGE_SIZE / 4];
+   agx9_ppp_pack_draw(page, &state);
+   STATIC_ASSERT(sizeof(draw->ppp_record) == sizeof(page));
+   uint8_t *ppp = draw->ppp_record;
+   memcpy(ppp, page, sizeof(page));
+
    /* Compare only this canonical 256-byte record, in CPU storage. This
     * bounded check reuses an immutable allocation; it neither scans an arena
     * nor derives byte-range patches. A new batch has no predecessor. */
@@ -1018,26 +996,6 @@ agx_apple9_prepare_draw(struct agx_device *dev, struct agx_pool *usc_pool,
    }
    return true;
 }
-
-/*
- * The per-draw PPP records in the order encodeAndEmitRenderState references
- * them (U:2149c1c64..2149c2288): offset within the draw's record page and
- * size in words. The record contents are documented with their packers.
- */
-static const struct {
-   uint16_t offset;
-   uint8_t words;
-} direct_ppp[] = {
-   {0x00, 5},   /* varying counts */
-   {0x40, 7},   /* fragment shader */
-   {0x5c, 5},   /* output select */
-   {0x70, 7},   /* fragment control, front face */
-   {0x8c, 5},   /* fragment control 2, back face */
-   {0xc0, 0xa}, /* region clip and viewport */
-   {0xa0, 3},   /* W clamp */
-   {0xac, 2},   /* cull */
-   {0xf0, 2},   /* depth bias and scissor indices */
-};
 
 bool
 agx_apple9_link_render_pipeline(struct agx_apple9_render_pipeline *pipeline,
@@ -1114,9 +1072,9 @@ agx_apple9_emit_draw_state(uint32_t *out,
    out = agx9_vdm_vertex_state(out, &state);
 
    /* PPP records are addressed relative to the render context. */
-   for (unsigned i = 0; i < ARRAY_SIZE(direct_ppp); i++) {
-      out = agx9_vdm_ppp_state(out, pipeline->ppp + direct_ppp[i].offset,
-                               direct_ppp[i].words);
+   for (unsigned i = 0; i < AGX9_PPP_RECORD_COUNT; i++) {
+      out = agx9_vdm_ppp_state(out, pipeline->ppp + agx9_ppp_records[i].offset,
+                               agx9_ppp_records[i].words);
    }
 
    return out;

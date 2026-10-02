@@ -81,4 +81,136 @@
   <struct name="Apple9 VDM Stream Terminate" size="4">
     <field name="Block Type" size="3" start="29" type="VDM Block Type" exact="Stream Terminate"/>
   </struct>
+
+  <!--
+    PPP records. Native encoder: AGX::PPPEncoderGen6<AGX::HAL200::ESLEncoder,
+    AGX::HAL200::VsStateConfig> and the state held in AGX::RenderContext.
+
+    Each record starts with an Apple8 "PPP Header" word and is referenced
+    from the VDM stream by a "PPP State" word. The nine records and their
+    header constants (U:2149c1c70..2149c21f0):
+
+      varying counts      5 words  0x10040000
+      fragment shader     7 words  0x00800000
+      output select       5 words  0x0c0a0000
+      fragment            7 words  0x010000b4
+      fragment 2          5 words  0x02000048
+      raster              0xa + 8n 0x00000c00 | n << 12
+      W clamp             3 words  0x00410000
+      cull                2 words  0x00200000
+      depth bias/scissor  2 words  0x00000100
+
+    The fragment and fragment 2 records carry their control word although
+    the header bits "Fragment control" / "Fragment control 2" are clear.
+
+    Shared with Apple8: "Fragment control", "Fragment face" (the line width
+    is 10 bits wide here), "Fragment stencil", "Fragment occlusion query",
+    "Region clip", "Viewport", "W Clamp", "Cull", "Output Select",
+    "Depth bias/Scissor".
+  -->
+
+  <!-- Four words of three 8-bit counts, built from two tables of the vertex
+       shader's compiler reply (U:2148d65b8..2148d68a4). Only the shape is
+       known for words 1..3; word 0 has the shape of Apple8 "Varying Counts"
+       and is what Mesa fills. -->
+  <struct name="Apple9 Varying Counts" size="16">
+    <field name="Smooth" size="8" start="0" type="uint"/>
+    <field name="Flat" size="8" start="8" type="uint"/>
+    <field name="Linear" size="8" start="16" type="uint"/>
+    <field name="Count 1 0" size="8" start="32" type="uint"/>
+    <field name="Count 1 1" size="8" start="40" type="uint"/>
+    <field name="Count 1 2" size="8" start="48" type="uint"/>
+    <field name="Count 2 0" size="8" start="64" type="uint"/>
+    <field name="Count 2 1" size="8" start="72" type="uint"/>
+    <field name="Count 2 2" size="8" start="80" type="uint"/>
+    <field name="Count 3 0" size="8" start="96" type="uint"/>
+    <field name="Count 3 1" size="8" start="104" type="uint"/>
+    <field name="Count 3 2" size="8" start="112" type="uint"/>
+  </struct>
+
+  <!-- Six words. The static part is written by
+       FragmentProgramVariantESLState::finalize (U:21496a194..21496a1f8) and
+       merged with the addresses when emitted (U:214a45e44..214a45ef8). -->
+  <struct name="Apple9 Fragment Shader" size="24">
+    <!-- Coefficient table address bits 32..47; Apple8 has register counts
+         here. -->
+    <field name="CF bindings hi" size="16" start="0" type="hex"/>
+    <field name="CF binding count" size="7" start="16" type="uint"/>
+    <!-- Entries of the first group when a second group exists. -->
+    <field name="CF binding count A" size="7" start="24" type="uint"/>
+
+    <field name="CF bindings" size="30" start="34" type="address" modifier="shr(2)"/>
+
+    <!-- The same two compiler-derived word counts as in the vertex state
+         block of the VDM stream. -->
+    <field name="State load count A" size="12" start="64" type="uint"/>
+    <field name="State load count B" size="18" start="99" type="uint"/>
+
+    <!-- GPU address of the fragment state-load program, bits 38..47 and
+         6..37. -->
+    <field name="State load hi" size="10" start="118" type="hex"/>
+    <field name="State load lo" size="32" start="128" type="hex"/>
+
+    <!-- A byte of the compiler reply (U:2149672d4..214967300). -->
+    <field name="Unknown" size="4" start="160" type="hex"/>
+  </struct>
+
+  <!-- Apple8 "Output Select" with the clip planes as a mask, (1 << n) - 1
+       for n planes (U:2148d64f0..2148d6520), and the bits Apple8 lacks
+       (U:2148ef4dc..2148ef518, U:2148d654c..2148d6558). -->
+  <struct name="Apple9 Output Select" size="4">
+    <field name="Clip distance planes" size="8" start="0" type="hex"/>
+    <field name="Varyings" size="1" start="16" type="bool"/>
+    <field name="Point size" size="1" start="18" type="bool"/>
+    <field name="Viewport target" size="1" start="19" type="bool"/>
+    <field name="Render target" size="1" start="20" type="bool"/>
+    <field name="Frag coord Z" size="1" start="21" type="bool"/>
+    <field name="Barycentric coordinates" size="1" start="22" type="bool"/>
+    <field name="Barycentric coordinates 2" size="1" start="23" type="bool"/>
+    <field name="Unknown 24" size="2" start="24" type="hex"/>
+    <field name="Unknown 26" size="2" start="26" type="hex"/>
+  </struct>
+
+  <!-- Vertex amplification count, [ctx+0x7fc0] - 1 (U:2149cf238..2149cf244).
+       Apple8 calls this word "Output Unknown". -->
+  <struct name="Apple9 Output Amplification" size="4">
+    <field name="Count" size="3" start="0" type="uint" modifier="minus(1)" default="1"/>
+  </struct>
+
+  <!-- [key+0xc] and [key+0x14] of the vertex program key
+       (U:2148d655c..2148d6560). Apple8 has a single 32-bit count. -->
+  <struct name="Apple9 Output Size" size="4">
+    <field name="Count" size="8" start="0" type="uint"/>
+    <field name="Count 2" size="8" start="16" type="uint"/>
+  </struct>
+
+  <!-- As Apple8, plus the polygon mode for triangle primitives
+       (U:2149c32fc..2149c331c). -->
+  <struct name="Apple9 Fragment face 2" size="4">
+    <field name="Polygon mode" size="2" start="18" type="Polygon Mode"/>
+    <field name="Disable depth write" size="1" start="21" type="bool"/>
+    <field name="Conservative depth" size="2" start="22" type="Conservative depth"/>
+    <field name="Depth function" size="3" start="24" type="ZS Func"/>
+    <field name="Object type" size="4" start="28" type="Object Type"/>
+  </struct>
+
+  <!-- Per render target channel write mask, shifted left by eight bits per
+       preceding target and cut to 17 bits (U:2148ef2a4..2148ef318). A single
+       four-component target with all channels written gives 0x1ffff. -->
+  <struct name="Apple9 Fragment occlusion query 2" size="4">
+    <field name="Channel write mask" size="17" start="0" type="hex"/>
+  </struct>
+
+  <!-- Bit 0: two viewports overlap (U:2148d2228..2148d2314). -->
+  <struct name="Apple9 Viewport control" size="4">
+    <field name="Overlapping viewports" size="1" start="0" type="bool"/>
+  </struct>
+
+  <!-- Initial value 0x80 (U:214a1abf4..214a1abf8). -->
+  <struct name="Apple9 Cull 2" size="4">
+    <field name="Unknown 7" size="1" start="7" type="bool" default="true"/>
+    <field name="Needs Primitive ID" size="1" start="12" type="bool"/>
+    <field name="Unknown 13" size="1" start="13" type="bool"/>
+    <field name="Rasterizer discard" size="1" start="17" type="bool"/>
+  </struct>
 </genxml>
