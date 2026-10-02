@@ -494,10 +494,7 @@ class Value(object):
 
 class Parser(object):
     def __init__(self):
-        self.parser = xml.parsers.expat.ParserCreate()
-        self.parser.StartElementHandler = self.start_element
-        self.parser.EndElementHandler = self.end_element
-
+        self.header_emitted = False
         self.struct = None
         self.structs = {}
         # Set of enum names we've seen.
@@ -508,7 +505,9 @@ class Parser(object):
 
     def start_element(self, name, attrs):
         if name == "genxml":
-            print(pack_header)
+            if not self.header_emitted:
+                print(pack_header)
+                self.header_emitted = True
         elif name == "struct":
             name = attrs["name"]
             object_name = self.gen_prefix(safe_name(name.upper()))
@@ -640,16 +639,22 @@ class Parser(object):
         print("#endif\n")
 
     def parse(self, filename):
+        # Structs and enums accumulate across files, so a later description
+        # may use the types of an earlier one.
+        parser = xml.parsers.expat.ParserCreate()
+        parser.StartElementHandler = self.start_element
+        parser.EndElementHandler = self.end_element
         file = open(filename, "rb")
-        self.parser.ParseFile(file)
+        parser.ParseFile(file)
         file.close()
 
 if len(sys.argv) < 3:
     print("Missing input files file specified")
     sys.exit(1)
 
-input_file = sys.argv[1]
 pack_header = open(sys.argv[2]).read()
 
 p = Parser()
-p.parse(input_file)
+p.parse(sys.argv[1])
+for extra in sys.argv[3:]:
+    p.parse(extra)
