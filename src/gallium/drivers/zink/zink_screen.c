@@ -1752,6 +1752,21 @@ zink_get_display_device(const struct zink_screen *screen, uint32_t pdev_count,
    return -1;
 }
 
+/* VK_EXT_physical_device_drm render node of the device; false without the extension. */
+static bool
+zink_pdev_has_drm_render(const struct zink_screen *screen, VkPhysicalDevice pdev)
+{
+   VkPhysicalDeviceDrmPropertiesEXT drm_props = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT,
+   };
+   VkPhysicalDeviceProperties2 props = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+      .pNext = &drm_props,
+   };
+   VKSCR(GetPhysicalDeviceProperties2)(pdev, &props);
+   return drm_props.hasRender;
+}
+
 static int
 zink_get_cpu_device_type(const struct zink_screen *screen, uint32_t pdev_count,
                          const VkPhysicalDevice *pdevs)
@@ -1835,9 +1850,12 @@ choose_pdev(struct zink_screen *screen, int64_t dev_major, int64_t dev_minor, ui
        * VK_EXT_physical_device_drm. When DRM matching is requested with a
        * valid render node and only a single Vulkan physical device is
        * available, select that device rather than failing due to the lack
-       * of DRM metadata.
+       * of DRM metadata. A device that reports its render node through
+       * VK_EXT_physical_device_drm and does not match is another device
+       * (e.g. kmsro probing every platform render node).
        */
-      if (idx == -1 && !adapter_luid && !cpu && pdev_count == 1)
+      if (idx == -1 && !adapter_luid && !cpu && pdev_count == 1 &&
+          !zink_pdev_has_drm_render(screen, pdevs[0]))
          idx = 0;
 
       if (idx != -1)
