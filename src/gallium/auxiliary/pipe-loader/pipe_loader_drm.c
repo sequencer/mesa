@@ -178,8 +178,10 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd, bool zin
    if (strcmp(ddev->base.driver_name, "vgem") == 0)
       goto fail;
 
-   /* kmsro supports lots of drivers, try as a fallback */
-   if (!ddev->dd && !zink)
+   /* kmsro supports lots of drivers, try as a fallback; a render node is no
+    * display device (the callers retry such a node with Zink).
+    */
+   if (!ddev->dd && !zink && drmGetNodeTypeFromFd(fd) != DRM_NODE_RENDER)
       ddev->dd = get_driver_descriptor("kmsro");
 
    if (!ddev->dd)

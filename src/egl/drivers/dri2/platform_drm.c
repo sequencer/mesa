@@ -45,6 +45,7 @@
 #include "eglglobals.h"
 #include "loader.h"
 #include "dri_util.h"
+#include "pipe/p_screen.h"
 
 static struct gbm_bo *
 lock_front_buffer(struct gbm_surface *_surf)
@@ -599,6 +600,15 @@ get_fd_render_gpu_drm(struct gbm_dri_device *gbm_dri, int fd_display_gpu)
    /* Render-capable device, so just return the same fd. */
    if (loader_is_device_render_capable(fd_display_gpu))
       return fd_display_gpu;
+
+   /* Display-only device: the render node the renderonly screen opened.
+    * With Zink built, every platform render node is a kmsro candidate, so
+    * the first compatible node need not be the one the screen took.
+    */
+   struct pipe_screen *pscreen = dri_get_pipe_screen(gbm_dri->screen);
+   int screen_fd = pscreen->get_screen_fd ? pscreen->get_screen_fd(pscreen) : -1;
+   if (screen_fd >= 0 && loader_is_device_render_capable(screen_fd))
+      return os_dupfd_cloexec(screen_fd);
 
    /* Display-only device, so return a compatible render-only device. */
    return dri_query_compatible_render_only_device_fd(fd_display_gpu);
