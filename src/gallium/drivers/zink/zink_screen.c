@@ -3748,10 +3748,13 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
 
    screen->total_video_mem = get_video_mem(screen);
    screen->clamp_video_mem = screen->total_video_mem * 0.8;
+   /* sysinfo is EPERM in Firefox's RDD / utility seccomp sandbox, where the
+    * VA-API decoder creates a GL context to verify dma-buf texture imports.
+    */
    if (!os_get_total_physical_memory(&screen->total_mem)) {
-      if (!screen->driver_name_is_inferred)
-         mesa_loge("ZINK: failed to get total physical memory");
-      goto fail;
+      screen->total_mem = 0;
+      for (unsigned i = 0; i < screen->info.mem_props.memoryHeapCount; i++)
+         screen->total_mem += screen->info.mem_props.memoryHeaps[i].size;
    }
 
    if (screen->info.have_EXT_sample_locations) {
